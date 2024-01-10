@@ -43,7 +43,7 @@
 
 % % This is the main script interface for the Disk Harmonic Analysis
 %% Paths
-close all;
+close all; format long;
 clear; clc; tic
 addpath('codes')
 addpath('stlTools')
@@ -56,7 +56,10 @@ fprintf('The analysis started at: %s\n', datestr(now,'HH:MM:SS.FFF'))
 parametrization = true;
 python_solver = false;
 
-surface_name = "Matterhorn_mode.stl";
+% surface_name = "Matterhorn_mode.stl";
+% surface_name = "half_stone.stl";
+surface_name = "sophie.stl";
+
 
 % mapping_type = "conformal"; % This option is not very good for reconstruction.
 mapping_type = "area_preserving";
@@ -69,7 +72,7 @@ para_surface_path = ''; % if the parametrization already computed
 solve_roots = false; % To solve for the roots if not pre-calculated!
 eigen_table_path = "eigenvalues_k_200.mat";
 
-max_degree = 5 + 1; % +1 to account for the 0-degree.
+max_degree = 9 + 1; % +1 to account for the 0-degree.
 max_reconstruction_degree = 70+ 1;
 truncation_degree_fit = max_reconstruction_degree; % For fitting the fractal dimension
 truncation_degree_fit = min(truncation_degree_fit, max_degree);
@@ -85,13 +88,13 @@ math_grid_reconstruction = false;
 
 % Geodesic dome STL reconstruction
 recursive_reconstruction = true;
-recursive_increments = 10;
+recursive_increments = 100;
 
 % option 1 gives you reconstruction by edge length and 2 gives you
 % reconstruction by number of even elements used.
 reconstruction_mesh_option = 1;
 % The desired length of each edge on a unit disk from (0.035 < edge_length < 1.0)
-edge_length = 0.0150;
+edge_length = 0.050;
 % The resolution or the number of vertices must be an even number!
 resolution = 50*2;
 
@@ -315,7 +318,16 @@ else
     [v_rec, f_rec] = uniform_disk_grid(edge_length, resolution,...
         reconstruction_mesh_option);
     v_rec(:, 3) = 0;
+    % Normalize numerical precision error
+    v_rec(:, 1) = v_rec(:, 1) ./ max(v_rec(:, 1));
+    v_rec(:, 2) = v_rec(:, 2) ./ max(v_rec(:, 2));
+    
     [rec_phis, rec_rhos] = cart2pol(v_rec(:,1), v_rec(:,2));
+
+    % Normalize numerical precision error (ignore rho = 1.00000001787)
+    rec_rhos_idx = (rec_rhos > 1.0);
+    rec_rhos(rec_rhos_idx) = 1.0 - eps;
+    
     rec_phis(rec_phis<0) = rec_phis(rec_phis<0) + 2*pi(); % phis \in [0, 2*pi]
     rec_basis_func = disk_harmonic_basis(max_degree, eigen_table, rec_rhos, rec_phis);
     v_rec = real(rec_basis_func * qm_k);
@@ -357,6 +369,50 @@ else
         view([50 20])
     end
 end
+
+
+%% Export VTK files
+% Compute derivatives
+[dD_rho, ddD_rho, dD_phi, ddD_phi, dD_rho_phi] = derivatives_disk_harmonic(max_reconstruction_degree, qm_k, eigen_table, rec_rhos, rec_phis);
+
+% Compute normals
+Normals = cross(dD_phi, dD_rho, 2);
+norm_ = sqrt(sum(Normals.^2, 2));
+Normals_n = Normals ./ norm_;
+
+% Compute curvatures and fundemental forms (I and II)
+[H, K_G, I, II, norm_crv] = compute_curvatures(dD_rho, ddD_rho, dD_phi, ddD_phi, dD_rho_phi, Normals_n);
+
+% Filter out outliers and singular points about the edges
+H_idx = (abs(real(H)) > 1.0);
+H (H_idx) = 0;
+K_G_idx = (abs(real(K_G))> 1.0);
+K_G(K_G_idx) = 0;
+
+dataStructArray = [
+    struct('name', 'height_map', 'data', v_rec(:, 3));
+    struct('name', 'dD_rho', 'data', real(dD_rho));
+    struct('name', 'dD_phi', 'data', real(dD_phi));
+    struct('name', 'Normals', 'data', real(Normals));
+    struct('name', 'Normals_n', 'data', real(Normals_n));
+    struct('name', 'I', 'data', real(I));
+    struct('name', 'II', 'data', real(II));
+    struct('name', 'mean_curvature', 'data', real(H));
+    struct('name', 'Gaussian_curvature', 'data', real(K_G));
+    struct('name', 'norm_crv', 'data', real(norm_crv));
+];
+
+if plot_figures
+    paraview_patch(v_rec, f_rec, real(K_G))
+    axis equal
+    title('Gaussian Curvature')
+    view([50 20])
+end
+
+surface_name_temp = split(surface_name, ".");
+writeVTK(v_rec, f_rec, dataStructArray, join(strcat(['rec_output/rec_k_', num2str(max_reconstruction_degree),...
+            '_', surface_name_temp(1), ".vtk"]),""));
+
 save(strcat(['rec_output/rec_k_', num2str(max_degree), '_', surface_name_wo_format,...
     '.mat']))
 fprintf("\n\nFinished in %f min.\n", toc/60)
