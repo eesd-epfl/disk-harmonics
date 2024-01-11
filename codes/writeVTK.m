@@ -44,8 +44,6 @@ function writeVTK(vertices, faces, dataStructArray, filename)
 
     % Close the file
     fclose(fid);
-
-    disp(['VTK file "', filename, '" written successfully.']);
 end
 
 % Example usage for multiple data structures

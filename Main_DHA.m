@@ -56,9 +56,9 @@ fprintf('The analysis started at: %s\n', datestr(now,'HH:MM:SS.FFF'))
 parametrization = true;
 python_solver = false;
 
-% surface_name = "Matterhorn_mode.stl";
-% surface_name = "half_stone.stl";
-surface_name = "sophie.stl";
+surface_name = "Matterhorn_mode.stl";
+% surface_name = "half_stone.stl"; % Something is wrong with this benchmark (Curvature)
+% surface_name = "sophie.stl";
 
 
 % mapping_type = "conformal"; % This option is not very good for reconstruction.
@@ -83,18 +83,19 @@ solver_increment_tri = 0.1;
 iterations_limit = 100;
 
 % Math grid reconstruction
-reconstruction_resolution = 100;
+reconstruction_resolution = 1;
 math_grid_reconstruction = false;
 
 % Geodesic dome STL reconstruction
 recursive_reconstruction = true;
-recursive_increments = 100;
+recursive_stl = false;
+recursive_increments = 1;
 
 % option 1 gives you reconstruction by edge length and 2 gives you
 % reconstruction by number of even elements used.
 reconstruction_mesh_option = 1;
 % The desired length of each edge on a unit disk from (0.035 < edge_length < 1.0)
-edge_length = 0.050;
+edge_length = 0.040;
 % The resolution or the number of vertices must be an even number!
 resolution = 50*2;
 
@@ -220,21 +221,21 @@ if plot_figures
     xlabel('Freqency index (k)')
     ylabel('Normalized amplitude (Dx)')
     grid on
-    
+
     subplot(3,3,2)
     loglog(x_temp(2:end), Dl(2, 2:end), 'LineWidth', 2)
     title('The shape descriptors')
     xlabel('Freqency index (k)')
     ylabel('Normalized amplitude (Dy)')
     grid on
-    
+
     subplot(3,3,3)
     loglog(x_temp(2:end), Dl(3, 2:end), 'LineWidth', 2)
     title('The shape descriptors')
     xlabel('Freqency index (k)')
     ylabel('Normalized amplitude (Dz)')
     grid on
-    
+
     subplot(3,3,4:6)
     loglog(x_temp(2:end), sqrt(Dl(1, 2:end).^2 + ...
         Dl(2, 2:end).^2 + Dl(3, 2:end).^2), 'LineWidth', 2)
@@ -242,7 +243,7 @@ if plot_figures
     xlabel('Freqency index (k)')
     ylabel('Normalized amplitude (Dr)')
     grid on
-    
+
     subplot(3,3,7:9)
     loglog(x_temp(2:truncation_degree_fit), (Dl(1, 2:truncation_degree_fit).^2 + ...
         Dl(2, 2:truncation_degree_fit).^2 + Dl(3, 2:truncation_degree_fit).^2), 'LineWidth', 2)
@@ -321,13 +322,13 @@ else
     % Normalize numerical precision error
     v_rec(:, 1) = v_rec(:, 1) ./ max(v_rec(:, 1));
     v_rec(:, 2) = v_rec(:, 2) ./ max(v_rec(:, 2));
-    
+
     [rec_phis, rec_rhos] = cart2pol(v_rec(:,1), v_rec(:,2));
 
     % Normalize numerical precision error (ignore rho = 1.00000001787)
     rec_rhos_idx = (rec_rhos > 1.0);
-    rec_rhos(rec_rhos_idx) = 1.0 - eps;
-    
+    rec_rhos(rec_rhos_idx) = 1.0 - 0.01; %10*eps;
+
     rec_phis(rec_phis<0) = rec_phis(rec_phis<0) + 2*pi(); % phis \in [0, 2*pi]
     rec_basis_func = disk_harmonic_basis(max_degree, eigen_table, rec_rhos, rec_phis);
     v_rec = real(rec_basis_func * qm_k);
@@ -340,17 +341,59 @@ else
     end
     if recursive_reconstruction
         %         This to export all the reconstruction degrees in different files
+        vtk_array = {};
+        rec_folder = strcat(['rec_output/rec_', surface_name_wo_format]);
+        rec_folder2 = strcat(['rec_', surface_name_wo_format]);
+        mkdir(rec_folder);
         for kk = 1:recursive_increments:max_reconstruction_degree-1
             v_rec_recrsive = real(rec_basis_func(:, 1:(kk+1)^2) * qm_k(1:(kk+1)^2, :));
-            try
-                stlWrite(strcat(['rec_output/rec_k_', num2str(kk),...
-                    '_', surface_name]), f_rec, v_rec_recrsive,'mode','ascii')
-            catch
-                stlWrite(strjoin(['rec_output/rec_k_', num2str(kk),...
-                    '_', surface_name], ""), f_rec, v_rec_recrsive,'mode','ascii')
+            if recursive_stl
+                try
+                    stlWrite(strcat([rec_folder, '/rec_k_', num2str(kk),...
+                        '_', surface_name]), f_rec, v_rec_recrsive,'mode','ascii')
+                catch
+                    stlWrite(strjoin([rec_folder, '/rec_k_', num2str(kk),...
+                        '_', surface_name], ""), f_rec, v_rec_recrsive,'mode','ascii')
+                end
+            else
+                vtk_array{end+1} = join(strcat([rec_folder2, '/rec_k_', num2str(kk),...
+                    '_', surface_name_wo_format, ".vtu"]), "");
+                [dD_rho, ddD_rho, dD_phi, ddD_phi, dD_rho_phi] = derivatives_disk_harmonic(kk,...
+                    qm_k(1:(kk+1)^2, :), eigen_table, rec_rhos, rec_phis);
+                
+                % Compute normals
+                [Normals, Normals_n] = compute_normals(dD_phi, dD_rho);
+
+                % Compute curvatures and fundemental forms (I and II)
+                [H, K_G, I, II, norm_crv] = compute_curvatures(dD_rho, ddD_rho, dD_phi, ddD_phi, dD_rho_phi, Normals_n);
+
+                % Filter out outliers and singular points about the edges
+                H_idx = (abs(real(H)) > 1.0);
+                H (H_idx) = 0;
+                K_G_idx = (abs(real(K_G))> 1.0);
+                K_G(K_G_idx) = 0;
+
+                recursive_dataStructArray = [
+                    struct('name', 'height_map', 'data', v_rec_recrsive(:, 3));
+                    struct('name', 'dD_rho', 'data', real(dD_rho));
+                    struct('name', 'dD_phi', 'data', real(dD_phi));
+                    struct('name', 'Normals', 'data', real(Normals));
+                    struct('name', 'Normals_n', 'data', real(Normals_n));
+                    struct('name', 'I', 'data', real(I));
+                    struct('name', 'II', 'data', real(II));
+                    struct('name', 'mean_curvature', 'data', real(H));
+                    struct('name', 'Gaussian_curvature', 'data', real(K_G));
+                    struct('name', 'norm_crv', 'data', real(norm_crv));
+                    ];
+
+                writeVTU(v_rec_recrsive, f_rec, recursive_dataStructArray, join(strcat([rec_folder, '/rec_k_', num2str(kk),...
+                    '_', surface_name_wo_format, ".vtu"]),""));
             end
             fprintf("\nFile: (%s) has been saved.", ['rec_k_', num2str(kk),...
                 '_', surface_name]);
+            pvdFilename = join(strcat('rec_output/rec_k_', num2str(max_reconstruction_degree),...
+                '_', surface_name_wo_format, '.pvd'), "");
+            writePVD(pvdFilename, vtk_array);
         end
     end
     % This to export the final reconstruction degrees in one files
@@ -376,9 +419,7 @@ end
 [dD_rho, ddD_rho, dD_phi, ddD_phi, dD_rho_phi] = derivatives_disk_harmonic(max_reconstruction_degree, qm_k, eigen_table, rec_rhos, rec_phis);
 
 % Compute normals
-Normals = cross(dD_phi, dD_rho, 2);
-norm_ = sqrt(sum(Normals.^2, 2));
-Normals_n = Normals ./ norm_;
+[Normals, Normals_n] = compute_normals(dD_phi, dD_rho);
 
 % Compute curvatures and fundemental forms (I and II)
 [H, K_G, I, II, norm_crv] = compute_curvatures(dD_rho, ddD_rho, dD_phi, ddD_phi, dD_rho_phi, Normals_n);
@@ -400,7 +441,7 @@ dataStructArray = [
     struct('name', 'mean_curvature', 'data', real(H));
     struct('name', 'Gaussian_curvature', 'data', real(K_G));
     struct('name', 'norm_crv', 'data', real(norm_crv));
-];
+    ];
 
 if plot_figures
     paraview_patch(v_rec, f_rec, real(K_G))
@@ -409,9 +450,8 @@ if plot_figures
     view([50 20])
 end
 
-surface_name_temp = split(surface_name, ".");
 writeVTK(v_rec, f_rec, dataStructArray, join(strcat(['rec_output/rec_k_', num2str(max_reconstruction_degree),...
-            '_', surface_name_temp(1), ".vtk"]),""));
+    '_', surface_name_wo_format, ".vtk"]),""));
 
 save(strcat(['rec_output/rec_k_', num2str(max_degree), '_', surface_name_wo_format,...
     '.mat']))
